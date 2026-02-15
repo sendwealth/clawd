@@ -1,0 +1,48 @@
+# Git
+.git
+.gitignore
+
+# Node modules
+node_modules/
+**/node_modules/
+
+# Git submodules (they have their own .git)
+.gitmodules
+claw-ai-frontend/
+
+# Documentation
+*.md
+!README.md
+
+# Memory and workspace files
+memory/
+canvas/
+skills/
+
+# Python
+*.py
+__pycache__/
+*.pyc
+
+# Workspace configuration
+AGENTS.md
+SOUL.md
+USER.md
+IDENTITY.md
+TOOLS.md
+HEARTBEAT.md
+BOOTSTRAP.md
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
