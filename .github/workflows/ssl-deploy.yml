@@ -7,20 +7,12 @@ on:
         description: 'Domain name (e.g., openspark.online)'
         required: true
         default: 'openspark.online'
+        type: string
       email:
         description: 'Email for certificate notifications'
         required: true
         default: 'sendwealth@163.com'
-  workflow_call:
-    inputs:
-      domain:
-        description: 'Domain name'
-        required: true
-        default: 'openspark.online'
-      email:
-        description: 'Email for certificate notifications'
-        required: true
-        default: 'sendwealth@163.com'
+        type: string
 
 jobs:
   deploy-ssl:
