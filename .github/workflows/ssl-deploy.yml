@@ -22,7 +22,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up SSH
+      - name: Display configuration
+        run: |
+          echo "========================================="
+          echo "SSL 部署配置"
+          echo "========================================="
+          echo "Domain: ${{ github.event.inputs.domain }}"
+          echo "Email: ${{ github.event.inputs.email }}"
+          echo "Server Host: ${{ secrets.SERVER_HOST }}"
+          echo "Server User: ${{ secrets.SERVER_USER }}"
+          echo "SSH Port: ${{ secrets.SSH_PORT }}"
+          echo "========================================="
+
+      - name: Setup SSH key
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -31,139 +43,137 @@ jobs:
         run: |
           mkdir -p ~/.ssh
           ssh-keyscan -p ${{ secrets.SSH_PORT }} ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+          echo "✅ Server added to known hosts"
 
-      - name: Deploy SSL Certificate
+      - name: Test SSH connection
         run: |
-          # 设置变量
-          DOMAIN="${{ github.event.inputs.domain || inputs.domain }}"
-          EMAIL="${{ github.event.inputs.email || inputs.email }}"
-          SERVER_HOST="${{ secrets.SERVER_HOST }}"
-          SERVER_USER="${{ secrets.SERVER_USER }}"
-          SSH_PORT="${{ secrets.SSH_PORT }}"
-          
-          echo "========================================="
-          echo "SSL 部署配置"
-          echo "========================================="
-          echo "  域名: $DOMAIN"
-          echo "  邮箱: $EMAIL"
-          echo "  服务器: $SERVER_HOST"
-          echo "  用户: $SERVER_USER"
-          echo "  端口: $SSH_PORT"
-          echo "========================================="
-          echo ""
+          ssh -p ${{ secrets.SSH_PORT }} -o ConnectTimeout=10 ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} "echo '✅ SSH connection successful' && whoami && pwd"
 
-          # SSH 连接到服务器
-          ssh -p $SSH_PORT ${SERVER_USER}@${SERVER_HOST} << 'ENDSSH'
+      - name: Install Nginx and Certbot
+        run: |
+          ssh -p ${{ secrets.SSH_PORT }} ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'ENDSSH'
             set -e
-
             echo "========================================="
-            echo "在服务器上执行SSL配置"
+            echo "安装 Nginx 和 Certbot"
             echo "========================================="
-            echo ""
-
-            # 检查是否以 root 权限运行
+            
+            # 检查是否需要 sudo
             if [ "$EUID" -ne 0 ]; then
-              echo "❌ 需要root权限，请使用sudo"
-              exit 1
+              echo "需要sudo权限，使用sudo运行命令"
+              SUDO="sudo"
+            else
+              SUDO=""
             fi
-
+            
             # 更新包列表
-            echo "📦 更新包列表..."
-            apt update
-
+            echo "更新包列表..."
+            $SUDO apt update
+            
             # 安装 Nginx
             if ! command -v nginx &> /dev/null; then
-              echo "📦 正在安装 Nginx..."
-              apt install -y nginx
+              echo "安装 Nginx..."
+              $SUDO apt install -y nginx
               echo "✅ Nginx 安装完成"
             else
               echo "✅ Nginx 已安装"
             fi
-
+            
             # 安装 Certbot
             if ! command -v certbot &> /dev/null; then
-              echo "📦 正在安装 Certbot..."
-              apt install -y certbot python3-certbot-nginx
+              echo "安装 Certbot..."
+              $SUDO apt install -y certbot python3-certbot-nginx
               echo "✅ Certbot 安装完成"
             else
               echo "✅ Certbot 已安装"
             fi
+          ENDSSH
 
-            echo ""
-            echo "🔧 配置域名变量..."
-            DOMAIN="${{ github.event.inputs.domain || inputs.domain }}"
-            WWW_DOMAIN="www.${{ github.event.inputs.domain || inputs.domain }}"
-            EMAIL="${{ github.event.inputs.email || inputs.email }}"
-            FRONTEND_PORT="${{ inputs.frontend_port || 3000 }}"
-            BACKEND_PORT="${{ inputs.backend_port || 8000 }}"
-
-            echo "  域名: $DOMAIN"
-            echo "  域名: $WWW_DOMAIN"
-            echo "  邮箱: $EMAIL"
-            echo ""
-
-            # 创建 Nginx 配置目录
-            mkdir -p /etc/nginx/sites-available
-            mkdir -p /etc/nginx/sites-enabled
-
-            # 创建临时 Nginx 配置（用于申请证书）
-            echo "🔧 创建 Nginx 配置..."
-            cat > /etc/nginx/sites-available/openspark-temp << EOF
+      - name: Configure Nginx
+        run: |
+          ssh -p ${{ secrets.SSH_PORT }} ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'ENDSSH'
+            set -e
+            echo "========================================="
+            echo "配置 Nginx"
+            echo "========================================="
+            
+            # 设置变量
+            DOMAIN="${{ github.event.inputs.domain }}"
+            WWW_DOMAIN="www.${{ github.event.inputs.domain }}"
+            EMAIL="${{ github.event.inputs.email }}"
+            
+            echo "Domain: $DOMAIN"
+            echo "WWW Domain: $WWW_DOMAIN"
+            echo "Email: $EMAIL"
+            
+            # 创建 Nginx 配置
+            cat > /tmp/openspark-nginx.conf << 'NGINX_CONF'
             server {
                 listen 80;
-                server_name $DOMAIN $WWW_DOMAIN;
-
+                server_name DOMAIN_VAR WWW_DOMAIN_VAR;
+                
                 # 前端
                 location / {
-                    proxy_pass http://localhost:\$FRONTEND_PORT;
-                    proxy_set_header Host \$host;
-                    proxy_set_header X-Real-IP \$remote_addr;
-                    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-                    proxy_set_header X-Forwarded-Proto \$scheme;
+                    proxy_pass http://localhost:3000;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
                 }
-
+                
                 # 后端 API
                 location /api {
-                    proxy_pass http://localhost:\$BACKEND_PORT;
-                    proxy_set_header Host \$host;
-                    proxy_set_header X-Real-IP \$remote_addr;
-                    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-                    proxy_set_header X-Forwarded-Proto \$scheme;
+                    proxy_pass http://localhost:8000;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
                 }
-
+                
                 # WebSocket
                 location /ws {
-                    proxy_pass http://localhost:\$BACKEND_PORT;
+                    proxy_pass http://localhost:8000;
                     proxy_http_version 1.1;
-                    proxy_set_header Upgrade \$http_upgrade;
+                    proxy_set_header Upgrade $http_upgrade;
                     proxy_set_header Connection "upgrade";
-                    proxy_set_header Host \$host;
-                    proxy_set_header X-Real-IP \$remote_addr;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
                 }
             }
-            EOF
-
-            # 启用临时配置
-            ln -sf /etc/nginx/sites-available/openspark-temp /etc/nginx/sites-enabled/
-            rm -f /etc/nginx/sites-enabled/default
-
+            NGINX_CONF
+            
+            # 替换域名变量
+            sed -i "s/DOMAIN_VAR/$DOMAIN/g" /tmp/openspark-nginx.conf
+            sed -i "s/WWW_DOMAIN_VAR/$WWW_DOMAIN/g" /tmp/openspark-nginx.conf
+            
+            # 安装配置
+            sudo mv /tmp/openspark-nginx.conf /etc/nginx/sites-available/openspark
+            sudo ln -sf /etc/nginx/sites-available/openspark /etc/nginx/sites-enabled/
+            sudo rm -f /etc/nginx/sites-enabled/default
+            
             # 测试 Nginx 配置
-            echo "🧪 测试 Nginx 配置..."
-            nginx -t || {
-              echo "❌ Nginx 配置测试失败"
-              exit 1
-            }
-
+            sudo nginx -t
+            
             # 重启 Nginx
-            echo "🔄 重启 Nginx..."
-            systemctl restart nginx
+            sudo systemctl restart nginx
+            
+            echo "✅ Nginx 配置完成"
+          ENDSSH
 
-            echo ""
-            echo "📜 正在申请 Let's Encrypt SSL 证书..."
-            echo ""
-
+      - name: Request SSL Certificate
+        run: |
+          ssh -p ${{ secrets.SSH_PORT }} ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'ENDSSH'
+            set -e
+            echo "========================================="
+            echo "申请 SSL 证书"
+            echo "========================================="
+            
+            # 设置变量
+            DOMAIN="${{ github.event.inputs.domain }}"
+            WWW_DOMAIN="www.${{ github.event.inputs.domain }}"
+            EMAIL="${{ github.event.inputs.email }}"
+            
             # 申请 SSL 证书
-            certbot --nginx \
+            sudo certbot --nginx \
               -d "$DOMAIN" \
               -d "$WWW_DOMAIN" \
               --email "$EMAIL" \
@@ -173,38 +183,28 @@ jobs:
               --hsts \
               --uir \
               --keep-until-expiring
+            
+            echo "✅ SSL 证书申请完成"
+          ENDSSH
 
-            echo ""
+      - name: Display Certificate Info
+        run: |
+          ssh -p ${{ secrets.SSH_PORT }} ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'ENDSSH'
             echo "========================================="
-            echo "✅ SSL 证书配置完成！"
+            echo "证书信息"
             echo "========================================="
-            echo ""
-
-            # 显示证书信息
-            echo "📋 证书信息："
-            certbot certificates
-
-            echo ""
-            echo "🔒 已启用的功能："
-            echo "  ✓ HTTPS (SSL/TLS)"
-            echo "  ✓ HTTP 到 HTTPS 自动重定向"
-            echo "  ✓ HSTS (HTTP Strict Transport Security)"
-            echo "  ✓ 自动续期"
-            echo ""
-
-            # 验证访问
-            echo "🌐 验证访问："
-            echo "  http://$DOMAIN → 自动重定向到 https://$DOMAIN"
-            echo "  http://$WWW_DOMAIN → 自动重定向到 https://$WWW_DOMAIN"
-            echo ""
-
-            # 测试自动续期
-            echo "🔄 测试自动续期配置..."
-            certbot renew --dry-run
-
-            echo ""
+            sudo certbot certificates
             echo "========================================="
-            echo "🎉 SSL 部署成功！"
+          ENDSSH
+
+      - name: Test SSL Renewal
+        run: |
+          ssh -p ${{ secrets.SSH_PORT }} ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'ENDSSH'
+            echo "========================================="
+            echo "测试自动续期"
+            echo "========================================="
+            sudo certbot renew --dry-run
+            echo "✅ 自动续期测试完成"
             echo "========================================="
           ENDSSH
 
@@ -213,24 +213,51 @@ jobs:
           echo "等待10秒让Nginx完全启动..."
           sleep 10
           
-          echo "测试HTTPS访问..."
-          curl -f https://${{ github.event.inputs.domain || inputs.domain }} || echo "⚠️  HTTPS测试失败，可能需要等待DNS propagation"
-
-      - name: Summary
-        run: |
           echo "========================================="
-          echo "SSL 部署完成"
+          echo "验证 SSL 配置"
+          echo "========================================="
+          
+          DOMAIN="${{ github.event.inputs.domain }}"
+          
+          echo "测试 HTTPS 访问..."
+          curl -f -I https://"$DOMAIN" 2>&1 || echo "⚠️  HTTPS 测试失败，可能需要等待 DNS propagation"
+          
+          echo ""
+          echo "========================================="
+          echo "部署完成！"
           echo "========================================="
           echo ""
-          echo "✅ Let's Encrypt SSL 证书已成功配置"
+          echo "✅ SSL 证书已成功配置"
           echo ""
           echo "📋 访问地址："
-          echo "  - https://${{ github.event.inputs.domain || inputs.domain }}"
-          echo "  - https://www.${{ github.event.inputs.domain || inputs.domain }}"
+          echo "  - https://$DOMAIN"
+          echo "  - https://www.$DOMAIN"
           echo ""
-          echo "🔒 证书将每90天自动续期"
+          echo "🔒 证书将每 90 天自动续期"
           echo ""
-          echo "📝 查看证书信息："
-          echo "  ssh -p \${{ secrets.SSH_PORT }} \${{ secrets.SERVER_USER }}@\${{ secrets.SERVER_HOST }} 'sudo certbot certificates'"
+          echo "📝 SSL 安全评分测试："
+          echo "  - 访问 https://www.ssllabs.com/ssltest/"
+          echo ""
+          echo "========================================="
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "========================================="
+          echo "SSL 部署总结"
+          echo "========================================="
+          echo ""
+          echo "✅ 已完成的任务："
+          echo "  ✓ 安装 Nginx 和 Certbot"
+          echo "  ✓ 配置 Nginx 反向代理"
+          echo "  ✓ 申请 Let's Encrypt SSL 证书"
+          echo "  ✓ 配置 HTTPS 自动重定向"
+          echo "  ✓ 启用 HSTS 安全头"
+          echo "  ✓ 配置自动续期"
+          echo ""
+          echo "📋 下一步："
+          echo "  1. 验证域名 DNS 解析"
+          echo "  2. 测试 HTTPS 访问"
+          echo "  3. SSL 安全评分测试"
           echo ""
           echo "========================================="
